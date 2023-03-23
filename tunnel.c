@@ -205,6 +205,18 @@ int main(int argc, const char **argv)
                         memcmp(&from.a, &addr.a, fromlen) == 0) {
                     address_ok = 1;
                 }
+                else {
+                    char host2[100];
+                    char serv2[20];
+                    getnameinfo(&from.a, fromlen, host, sizeof(host),
+                            serv, sizeof(serv),
+                            NI_NUMERICHOST | NI_NUMERICSERV);
+                    getnameinfo(&addr.a, addrlen, host2, sizeof(host2),
+                            serv2, sizeof(serv2),
+                            NI_NUMERICHOST | NI_NUMERICSERV);
+                    fprintf(stderr, "Addr mismatch: from(%s:%s) addr(%s:%s)\n",
+                            host, serv, host2, serv2);
+                }
             }
             else {
                 memcpy(&addr.a, &from.a, fromlen);
