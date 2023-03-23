@@ -18,13 +18,30 @@ union sa_t {
     uint8_t _buf[MAXADDRLEN];
 };
 
+const char HEX[] = {
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    'A', 'B', 'C', 'D', 'E', 'F'
+};
+
+void dumphex(const uint8_t *data, ssize_t count)
+{
+    char * text = malloc(count * 2 + 1);
+    for (ssize_t i = 0; i < count; ++ i) {
+        uint8_t byte = data[i];
+        text[2 * i] = HEX[byte >> 4];
+        text[2 * i + 1] = HEX[byte & 15];
+    }
+    text[2 * count] = '\0';
+    puts(text);
+}
+
 int main(int argc, const char **argv)
 {
     struct addrinfo hints;
     struct addrinfo *result, *rp;
 
     int dev, sock;
-    unsigned char buf[BUFLEN];
+    uint8_t buf[BUFLEN];
     union sa_t addr;
     socklen_t addrlen;
     struct ifreq ifr;
@@ -33,7 +50,8 @@ int main(int argc, const char **argv)
     char dev_name[IFNAMSIZ + 1];
 
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s [-6] <localip> <localport> [<remotehost> <remoteport>]\n");
+        fprintf(stderr, "Usage: %s [-6] <localip> <localport> "
+                "[<remotehost> <remoteport>]\n", argv[0]);
         exit(1);
     }
 
@@ -88,7 +106,8 @@ int main(int argc, const char **argv)
         exit(6);
     }
     if (result -> ai_next) {
-        fprintf(stderr, "getaddrinfo for local returned multiple addresses\n");
+        fprintf(stderr,
+                "getaddrinfo for local returned multiple addresses\n");
     }
     memcpy(&addr.a, result -> ai_addr, result -> ai_addrlen);
     addrlen = result -> ai_addrlen;
@@ -100,17 +119,36 @@ int main(int argc, const char **argv)
 
     freeaddrinfo(result);
 
+    addrlen = MAXADDRLEN;
+    if (getsockname(sock, &addr.a, &addrlen) == -1) {
+        perror("getsockname failed");
+        exit(8);
+    }
+
+    char host[100];
+    char serv[20];
+    int res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
+            serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
+    if (res != 0) {
+        fprintf(stderr,
+                "Cannot get name from address: %s\n", gai_strerror(res));
+    }
+    else {
+        printf("Bound to %s:%s\n", host, serv);
+    }
+
     if (!autoaddress) {
         if (getaddrinfo(rhost, rport, &hints, &result)) {
             perror("getaddrinfo for remote address failed");
-            exit(8);
+            exit(9);
         }
         if (!result) {
             fprintf(stderr, "getaddrinfo for remote returned nothing\n");
-            exit(9);
+            exit(10);
         }
         if (result -> ai_next) {
-            fprintf(stderr, "getaddrinfo for remote returned multiple addresses\n");
+            fprintf(stderr, "getaddrinfo for remote returned "
+                    "multiple addresses\n");
         }
         memcpy(&addr.a, result -> ai_addr, result -> ai_addrlen);
         addrlen = result -> ai_addrlen;
@@ -134,18 +172,37 @@ int main(int argc, const char **argv)
 
         if (FD_ISSET(dev, &rfds)) {
             ssize_t cnt = read(dev, (void *)&buf, sizeof(buf));
+            fputs("t>", stdout); dumphex(buf, cnt);
             sendto(sock, &buf, cnt, 0, &addr.a, addrlen);
+            res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
+                    serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
+            if (res == 0) {
+                printf("s<%s:%s\n", host, serv);
+            }
+            else {
+                puts("s<...");
+            }
         }
 
         if (FD_ISSET(sock, &rfds)) {
             union sa_t from;
             socklen_t fromlen = MAXADDRLEN;
 
-            ssize_t cnt = recvfrom(sock, &buf, sizeof(buf), 0, &from.a, &fromlen);
+            ssize_t cnt = recvfrom(sock, &buf, sizeof(buf), 0,
+                    &from.a, &fromlen);
+            res = getnameinfo(&from.a, fromlen, host, sizeof(host),
+                    serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
+            if (res == 0) {
+                printf("s>%s:%s\n", host, serv);
+            }
+            else {
+                puts("s>...");
+            }
 
             int address_ok = 0;
             if (!autoaddress) {
-                if (addrlen == fromlen && memcmp(&from.a, &addr.a, fromlen) == 0) {
+                if (addrlen == fromlen &&
+                        memcmp(&from.a, &addr.a, fromlen) == 0) {
                     address_ok = 1;
                 }
             }
@@ -156,6 +213,7 @@ int main(int argc, const char **argv)
             }
 
             if (address_ok) {
+                fputs("t<", stdout); dumphex(buf, cnt);
                 write(dev, (void *)&buf, cnt);
             }
         }
