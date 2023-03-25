@@ -165,7 +165,7 @@ int main(int argc, const char **argv)
     fcntl(dev, F_SETFL, O_NONBLOCK);
 
     uint8_t key[16];  /* 128 bits key */
-    FILE * keyfile = fopen("key", "rb");
+    FILE *keyfile = fopen("key", "rb");
     if (keyfile == NULL) {
         perror("cannot open key file");
         exit(11);
@@ -174,9 +174,10 @@ int main(int argc, const char **argv)
         fprintf(stderr, "error read key\n");
         exit(12);
     }
+    fclose(keyfile);
 
     uint8_t iv[AES_BLOCK_SIZE];
-    FILE * ivfile = fopen("iv", "rb");
+    FILE *ivfile = fopen("iv", "rb");
     if (keyfile == NULL) {
         perror("cannot open iv file");
         exit(13);
@@ -185,13 +186,22 @@ int main(int argc, const char **argv)
         fprintf(stderr, "error read iv\n");
         exit(14);
     }
+    fclose(ivfile);
     uint8_t ivc[AES_BLOCK_SIZE];  /* copy of iv */
 
     AES_KEY enc_key, dec_key;
     AES_set_encrypt_key(key, sizeof(key) * 8, &enc_key);
     AES_set_decrypt_key(key, sizeof(key) * 8, &dec_key);
 
-    if (fork() != 0) {
+    pid_t pid;
+    if ((pid = fork()) != 0) {
+        FILE *pidfile = fopen("jtun.pid", "w");
+        if (keyfile == NULL) {
+            perror("cannot open jtun.pid");
+            exit(15);
+        }
+        fprintf(pidfile, "%d", pid);
+        fclose(pidfile);
         return 0;
     }
 
