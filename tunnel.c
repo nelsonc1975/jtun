@@ -10,9 +10,10 @@
 #include <linux/if_tun.h>
 #include <net/if.h>
 #include <openssl/aes.h>
+#include <openssl/rand.h>
 
 #define PKGLEN 1500
-#define HEADLEN 2
+#define HEADLEN 6
 #define MSGLEN (PKGLEN + HEADLEN)
 #define BUFLEN CBCLEN(MSGLEN)
 #define CBCLEN(l) (((l) + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE * AES_BLOCK_SIZE)
@@ -43,7 +44,7 @@ void dumphex(const uint8_t *data, ssize_t count)
 int main(int argc, const char **argv)
 {
     struct addrinfo hints;
-    struct addrinfo *result, *rp;
+    struct addrinfo *result;
 
     int dev, sock;
     union sa_t addr;
@@ -51,7 +52,6 @@ int main(int argc, const char **argv)
     struct ifreq ifr;
 
     const char *tun_device = "/dev/net/tun";
-    char dev_name[IFNAMSIZ + 1];
 
     if (argc < 3) {
         fprintf(stderr, "Usage: %s [-6] <localip> <localport> "
@@ -91,6 +91,7 @@ int main(int argc, const char **argv)
         perror("ioctl(TUNSETIFF) failed");
         exit(3);
     }
+    printf("TUN: %s\n", ifr.ifr_name);
 
     if ((sock = socket(ip_family, SOCK_DGRAM, 0)) == -1) {
         perror("Create socket failed");
@@ -164,16 +165,24 @@ int main(int argc, const char **argv)
 
     uint8_t key[16];  /* 128 bits key */
     FILE * keyfile = fopen("key", "rb");
+    if (keyfile == NULL) {
+        perror("cannot open key file");
+        exit(11);
+    }
     if (fread(key, sizeof(key), 1, keyfile) != 1) {
         fprintf(stderr, "error read key\n");
-        exit(11);
+        exit(12);
     }
 
     uint8_t iv[AES_BLOCK_SIZE];
     FILE * ivfile = fopen("iv", "rb");
+    if (keyfile == NULL) {
+        perror("cannot open iv file");
+        exit(13);
+    }
     if (fread(iv, sizeof(iv), 1, ivfile) != 1) {
         fprintf(stderr, "error read iv\n");
-        exit(12);
+        exit(14);
     }
     uint8_t ivc[AES_BLOCK_SIZE];  /* copy of iv */
 
@@ -199,18 +208,26 @@ int main(int argc, const char **argv)
         if (FD_ISSET(dev, &rfds)) {
             ssize_t cnt = read(dev, (void *)&tbuf[HEADLEN], BUFLEN);
             *((uint16_t *)tbuf) = htons((uint16_t)cnt);
-            fputs("t>", stdout); dumphex(tbuf, cnt + HEADLEN);
+            if (RAND_bytes(&tbuf[2], 4) != 1) {
+                *((uint32_t *)&tbuf[2]) = 0xAA5555AA;
+            }
+            // fputs("t>", stdout); dumphex(tbuf, cnt + HEADLEN);
             memcpy(ivc, iv, AES_BLOCK_SIZE);
-            AES_cbc_encrypt(sbuf, tbuf, cnt + HEADLEN, &enc_key, ivc, AES_ENCRYPT);
-            ssize_t slen = CBCLEN(cnt + 2);
+            AES_cbc_encrypt(tbuf, sbuf, cnt + HEADLEN, &enc_key, ivc, AES_ENCRYPT);
+            ssize_t slen = CBCLEN(cnt + HEADLEN);
+            if (RAND_bytes(&sbuf[slen], AES_BLOCK_SIZE) == 1) {
+                uint8_t padlen = sbuf[slen + AES_BLOCK_SIZE - 1] % AES_BLOCK_SIZE;
+                slen += padlen;
+            }
             sendto(sock, &sbuf, slen, 0, &addr.a, addrlen);
             res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
                     serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
+            // fputs("==", stdout); dumphex(sbuf, slen);
             if (res == 0) {
-                printf("s<%s:%s\n", host, serv);
+                // printf("s<%s:%s\n", host, serv);
             }
             else {
-                puts("s<...");
+                // puts("s<...");
             }
         }
 
@@ -223,11 +240,12 @@ int main(int argc, const char **argv)
             res = getnameinfo(&from.a, fromlen, host, sizeof(host),
                     serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
             if (res == 0) {
-                printf("s>%s:%s\n", host, serv);
+                // printf("s>%s:%s\n", host, serv);
             }
             else {
-                puts("s>...");
+                // puts("s>...");
             }
+            // fputs("==", stdout); dumphex(sbuf, cnt);
 
             int address_ok = 0;
             if (!autoaddress) {
@@ -255,10 +273,11 @@ int main(int argc, const char **argv)
             }
 
             if (address_ok) {
+                cnt = (cnt / AES_BLOCK_SIZE) * AES_BLOCK_SIZE;
                 memcpy(ivc, iv, AES_BLOCK_SIZE);
                 AES_cbc_encrypt(sbuf, tbuf, cnt, &dec_key, ivc, AES_DECRYPT);
-                uint8_t msglen = ntohs(*(uint8_t *)tbuf);
-                fputs("t<", stdout); dumphex(tbuf, msglen + HEADLEN);
+                uint8_t msglen = ntohs(*(uint16_t *)tbuf);
+                // fputs("t<", stdout); dumphex(tbuf, msglen + HEADLEN);
                 write(dev, (void *)&tbuf[HEADLEN], msglen);
             }
         }
