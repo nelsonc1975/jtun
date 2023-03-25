@@ -9,8 +9,13 @@
 #include <sys/ioctl.h>
 #include <linux/if_tun.h>
 #include <net/if.h>
+#include <openssl/aes.h>
 
-#define BUFLEN 1536
+#define PKGLEN 1500
+#define HEADLEN 2
+#define MSGLEN (PKGLEN + HEADLEN)
+#define BUFLEN CBCLEN(MSGLEN)
+#define CBCLEN(l) (((l) + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE * AES_BLOCK_SIZE)
 #define MAXADDRLEN sizeof(struct sockaddr_in6)
 
 union sa_t {
@@ -41,7 +46,6 @@ int main(int argc, const char **argv)
     struct addrinfo *result, *rp;
 
     int dev, sock;
-    uint8_t buf[BUFLEN];
     union sa_t addr;
     socklen_t addrlen;
     struct ifreq ifr;
@@ -157,7 +161,29 @@ int main(int argc, const char **argv)
 
     fcntl(sock, F_SETFL, O_NONBLOCK);
     fcntl(dev, F_SETFL, O_NONBLOCK);
-    
+
+    uint8_t key[16];  /* 128 bits key */
+    FILE * keyfile = fopen("key", "rb");
+    if (fread(key, sizeof(key), 1, keyfile) != 1) {
+        fprintf(stderr, "error read key\n");
+        exit(11);
+    }
+
+    uint8_t iv[AES_BLOCK_SIZE];
+    FILE * ivfile = fopen("iv", "rb");
+    if (fread(iv, sizeof(iv), 1, ivfile) != 1) {
+        fprintf(stderr, "error read iv\n");
+        exit(12);
+    }
+    uint8_t ivc[AES_BLOCK_SIZE];  /* copy of iv */
+
+    AES_KEY enc_key, dec_key;
+    AES_set_encrypt_key(key, sizeof(key) * 8, &enc_key);
+    AES_set_decrypt_key(key, sizeof(key) * 8, &dec_key);
+
+    uint8_t tbuf[BUFLEN];
+    uint8_t sbuf[BUFLEN];
+
     int maxfd = (sock > dev) ? sock : dev;
     while (1) {
         fd_set rfds;
@@ -171,9 +197,13 @@ int main(int argc, const char **argv)
         }
 
         if (FD_ISSET(dev, &rfds)) {
-            ssize_t cnt = read(dev, (void *)&buf, sizeof(buf));
-            fputs("t>", stdout); dumphex(buf, cnt);
-            sendto(sock, &buf, cnt, 0, &addr.a, addrlen);
+            ssize_t cnt = read(dev, (void *)&tbuf[HEADLEN], BUFLEN);
+            *((uint16_t *)tbuf) = htons((uint16_t)cnt);
+            fputs("t>", stdout); dumphex(tbuf, cnt + HEADLEN);
+            memcpy(ivc, iv, AES_BLOCK_SIZE);
+            AES_cbc_encrypt(sbuf, tbuf, cnt + HEADLEN, &enc_key, ivc, AES_ENCRYPT);
+            ssize_t slen = CBCLEN(cnt + 2);
+            sendto(sock, &sbuf, slen, 0, &addr.a, addrlen);
             res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
                     serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
             if (res == 0) {
@@ -188,7 +218,7 @@ int main(int argc, const char **argv)
             union sa_t from;
             socklen_t fromlen = MAXADDRLEN;
 
-            ssize_t cnt = recvfrom(sock, &buf, sizeof(buf), 0,
+            ssize_t cnt = recvfrom(sock, &sbuf, sizeof(sbuf), 0,
                     &from.a, &fromlen);
             res = getnameinfo(&from.a, fromlen, host, sizeof(host),
                     serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
@@ -225,8 +255,11 @@ int main(int argc, const char **argv)
             }
 
             if (address_ok) {
-                fputs("t<", stdout); dumphex(buf, cnt);
-                write(dev, (void *)&buf, cnt);
+                memcpy(ivc, iv, AES_BLOCK_SIZE);
+                AES_cbc_encrypt(sbuf, tbuf, cnt, &dec_key, ivc, AES_DECRYPT);
+                uint8_t msglen = ntohs(*(uint8_t *)tbuf);
+                fputs("t<", stdout); dumphex(tbuf, msglen + HEADLEN);
+                write(dev, (void *)&tbuf[HEADLEN], msglen);
             }
         }
     }
