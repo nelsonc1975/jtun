@@ -6,8 +6,7 @@ LDFLAGS=-lcrypto
 
 DEPS=$(wildcard *.h)
 
-#SRC=$(wildcard *.c)
-SRC=tunnel.c
+SRC=$(wildcard *.c)
 
 OBJ=$(patsubst %.c, %.o, $(SRC))
 

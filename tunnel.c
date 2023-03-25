@@ -9,6 +9,7 @@
 #include <sys/ioctl.h>
 #include <linux/if_tun.h>
 #include <net/if.h>
+#include <pwd.h>
 #include <openssl/aes.h>
 #include <openssl/rand.h>
 
@@ -190,11 +191,24 @@ int main(int argc, const char **argv)
     AES_set_encrypt_key(key, sizeof(key) * 8, &enc_key);
     AES_set_decrypt_key(key, sizeof(key) * 8, &dec_key);
 
-    uint8_t tbuf[BUFLEN];
-    uint8_t sbuf[BUFLEN];
+    if (fork() != 0) {
+        return 0;
+    }
+
+    struct passwd * jtun = getpwnam("jtun");
+    if (jtun == NULL) {
+        perror("getpwnam for jtun error");
+        exit(15);
+    }
+
+    setgid(jtun -> pw_gid);
+    setuid(jtun -> pw_uid);
 
     int maxfd = (sock > dev) ? sock : dev;
     while (1) {
+        uint8_t tbuf[BUFLEN];
+        uint8_t sbuf[BUFLEN];
+
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(sock, &rfds);
