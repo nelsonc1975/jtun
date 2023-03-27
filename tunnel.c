@@ -132,7 +132,7 @@ int main(int argc, const char **argv)
     }
 
     char host[100];
-    char serv[20];
+    char serv[50];
     int res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
             serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
     if (res != 0) {
@@ -195,9 +195,11 @@ int main(int argc, const char **argv)
 
     pid_t pid;
     if ((pid = fork()) != 0) {
-        FILE *pidfile = fopen("jtun.pid", "w");
+        char pidfname[IFNAMSIZ + 20];
+        snprintf(pidfname, sizeof(pidfname), "jtun.%s.pid", ifr.ifr_name);
+        FILE *pidfile = fopen(pidfname, "w");
         if (keyfile == NULL) {
-            perror("cannot open jtun.pid");
+            perror("cannot create pid file");
             exit(15);
         }
         fprintf(pidfile, "%d", pid);
@@ -208,7 +210,7 @@ int main(int argc, const char **argv)
     struct passwd * jtun = getpwnam("jtun");
     if (jtun == NULL) {
         perror("getpwnam for jtun error");
-        exit(15);
+        exit(16);
     }
 
     setgid(jtun -> pw_gid);

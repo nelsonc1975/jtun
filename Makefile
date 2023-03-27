@@ -1,14 +1,14 @@
 all: jtun
 
-CC=gcc
-CFLAGS=-Wall
-LDFLAGS=-lcrypto
+CC := gcc
+CFLAGS := $(TARGET_CFLAGS) -Wall
+LDFLAGS += $(TARGET_LDFLAGS) -lcrypto
 
-DEPS=$(wildcard *.h)
+DEPS = $(wildcard *.h)
 
-SRC=$(wildcard *.c)
+SRC = $(wildcard *.c)
 
-OBJ=$(patsubst %.c, %.o, $(SRC))
+OBJ = $(patsubst %.c, %.o, $(SRC))
 
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
