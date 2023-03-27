@@ -242,7 +242,7 @@ int main(int argc, const char **argv)
             AES_cbc_encrypt(tbuf, sbuf, cnt + HEADLEN, &enc_key, ivc, AES_ENCRYPT);
             ssize_t slen = CBCLEN(cnt + HEADLEN);
             if (RAND_bytes(&sbuf[slen], AES_BLOCK_SIZE) == 1) {
-                uint8_t padlen = sbuf[slen + AES_BLOCK_SIZE - 1] % AES_BLOCK_SIZE;
+                ssize_t padlen = sbuf[slen + AES_BLOCK_SIZE - 1] % AES_BLOCK_SIZE;
                 slen += padlen;
             }
             sendto(sock, &sbuf, slen, 0, &addr.a, addrlen);
@@ -302,7 +302,7 @@ int main(int argc, const char **argv)
                 cnt = (cnt / AES_BLOCK_SIZE) * AES_BLOCK_SIZE;
                 memcpy(ivc, iv, AES_BLOCK_SIZE);
                 AES_cbc_encrypt(sbuf, tbuf, cnt, &dec_key, ivc, AES_DECRYPT);
-                uint8_t msglen = ntohs(*(uint16_t *)tbuf);
+                ssize_t msglen = ntohs(*(uint16_t *)tbuf);
                 // fputs("t<", stdout); dumphex(tbuf, msglen + HEADLEN);
                 write(dev, (void *)&tbuf[HEADLEN], msglen);
             }
