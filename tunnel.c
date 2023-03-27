@@ -42,7 +42,16 @@ void dumphex(const uint8_t *data, ssize_t count)
     puts(text);
 }
 
-int main(int argc, const char **argv)
+void usage(const char *name)
+{
+    fprintf(stderr,
+            "Usage: %s [-46scv] [-d dev] [-h host] [-p port] "
+            "[<host> <port>]\n",
+            name);
+    exit(1);
+}
+
+int main(int argc, char **argv)
 {
     struct addrinfo hints;
     struct addrinfo *result;
@@ -54,31 +63,59 @@ int main(int argc, const char **argv)
 
     const char *tun_device = "/dev/net/tun";
 
-    if (argc < 3) {
-        fprintf(stderr, "Usage: %s [-6] <localip> <localport> "
-                "[<remotehost> <remoteport>]\n", argv[0]);
-        exit(1);
-    }
-
-    int ip_family;
-    if (strcmp(argv[1], "-6") == 0) {
-        ++ argv;
-        ip_family = AF_INET6;
-    }
-    else {
-        ip_family = AF_INET;
-    }
-
-    int autoaddress = 1;
-    const char *laddr = argv[1];
-    const char *lport = argv[2];
+    int ip_family = AF_INET;
+    int isserv = 1;
+    const char *laddr = NULL;
+    const char *lport = "";
     const char *rhost = NULL;
     const char *rport = NULL;
+    const char *devname = "jtun%d";
+    int verbose = 0;
 
-    if (argc == 5) {
-        autoaddress = 0;
-        rhost = argv[3];
-        rport = argv[4];
+    int opt;
+    while ((opt = getopt(argc, argv, "v46scd:h:p:")) != -1) {
+        switch (opt) {
+            case '4':
+                ip_family = AF_INET;
+            case '6':
+                ip_family = AF_INET6;
+                break;
+            case 's':
+                isserv = 1;
+                break;
+            case 'c':
+                isserv = 0;
+                break;
+            case 'h':
+                laddr = strdup(optarg);
+                break;
+            case 'p':
+                lport = strdup(optarg);
+                break;
+            case 'd':
+                devname = strdup(optarg);
+                break;
+            case 'v':
+                ++verbose;
+                break;
+            default:
+                usage(argv[0]);
+                break;
+        }
+    }
+
+    if (!isserv) {
+        if (optind + 2 != argc) {
+            usage(argv[0]);
+        }
+
+        rhost = argv[optind];
+        rport = argv[optind + 1];
+    }
+    else {
+        if (optind != argc) {
+            usage(argv[0]);
+        }
     }
 
     if ((dev = open(tun_device, O_RDWR)) < 0) {
@@ -88,11 +125,13 @@ int main(int argc, const char **argv)
 
     bzero(&ifr, sizeof(ifr));
     ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+    if (devname != NULL) {
+        strncpy(ifr.ifr_name, devname, IFNAMSIZ);
+    }
     if (ioctl(dev, TUNSETIFF, (void *)&ifr) < 0) {
         perror("ioctl(TUNSETIFF) failed");
         exit(3);
     }
-    printf("TUN: %s\n", ifr.ifr_name);
 
     if ((sock = socket(ip_family, SOCK_DGRAM, 0)) == -1) {
         perror("Create socket failed");
@@ -111,15 +150,23 @@ int main(int argc, const char **argv)
         fprintf(stderr, "getaddrinfo for local returned nothing\n");
         exit(6);
     }
-    if (result -> ai_next) {
-        fprintf(stderr,
-                "getaddrinfo for local returned multiple addresses\n");
-    }
-    memcpy(&addr.a, result -> ai_addr, result -> ai_addrlen);
-    addrlen = result -> ai_addrlen;
 
-    if (bind(sock, &addr.a, addrlen)) {
-        perror("bind to local address failed");
+    int isbind = 0;
+    while (result != NULL) {
+        memcpy(&addr.a, result -> ai_addr, result -> ai_addrlen);
+        addrlen = result -> ai_addrlen;
+        if (bind(sock, &addr.a, addrlen) == 0) {
+            isbind = 1;
+            break;
+        }
+        else if (verbose > 2) {
+            perror("bind failed");
+        }
+        result = result -> ai_next;
+    }
+
+    if (!isbind) {
+        fprintf(stderr, "cannot bind local address\n");
         exit(7);
     }
 
@@ -137,13 +184,10 @@ int main(int argc, const char **argv)
             serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
     if (res != 0) {
         fprintf(stderr,
-                "Cannot get name from address: %s\n", gai_strerror(res));
-    }
-    else {
-        printf("Bound to %s:%s\n", host, serv);
+                "cannot get name from address: %s\n", gai_strerror(res));
     }
 
-    if (!autoaddress) {
+    if (!isserv) {
         if (getaddrinfo(rhost, rport, &hints, &result)) {
             perror("getaddrinfo for remote address failed");
             exit(9);
@@ -152,10 +196,7 @@ int main(int argc, const char **argv)
             fprintf(stderr, "getaddrinfo for remote returned nothing\n");
             exit(10);
         }
-        if (result -> ai_next) {
-            fprintf(stderr, "getaddrinfo for remote returned "
-                    "multiple addresses\n");
-        }
+
         memcpy(&addr.a, result -> ai_addr, result -> ai_addrlen);
         addrlen = result -> ai_addrlen;
         freeaddrinfo(result);
@@ -195,6 +236,11 @@ int main(int argc, const char **argv)
 
     pid_t pid;
     if ((pid = fork()) != 0) {
+        printf("TUN: %s\n", ifr.ifr_name);
+        if (isserv) {
+            printf("Bind: %s:%s\n", host, serv);
+        }
+
         char pidfname[IFNAMSIZ + 20];
         snprintf(pidfname, sizeof(pidfname), "jtun.%s.pid", ifr.ifr_name);
         FILE *pidfile = fopen(pidfname, "w");
@@ -274,7 +320,7 @@ int main(int argc, const char **argv)
             // fputs("==", stdout); dumphex(sbuf, cnt);
 
             int address_ok = 0;
-            if (!autoaddress) {
+            if (!isserv) {
                 if (addrlen == fromlen &&
                         memcmp(&from.a, &addr.a, fromlen) == 0) {
                     address_ok = 1;
