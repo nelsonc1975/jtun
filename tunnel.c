@@ -253,6 +253,21 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    char logfname[IFNAMSIZ + 20];
+    snprintf(logfname, sizeof(logfname), "jtun.%s.log", ifr.ifr_name);
+    int logfd = open(logfname, O_WRONLY);
+    int nullfd = open("/dev/null", O_RDWR);
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+    dup2(nullfd, STDOUT_FILENO);
+    dup2(logfd, STDOUT_FILENO);
+    dup2(nullfd, STDERR_FILENO);
+    close(logfd);
+    close(nullfd);
+
+    printf("JTun started.\n");
+
     struct passwd * jtun = getpwnam("jtun");
     if (jtun == NULL) {
         perror("getpwnam for jtun error");
@@ -326,16 +341,16 @@ int main(int argc, char **argv)
                     address_ok = 1;
                 }
                 else {
-                    char host2[100];
-                    char serv2[20];
+                    char mhost[100];
+                    char mserv[20];
                     getnameinfo(&from.a, fromlen, host, sizeof(host),
                             serv, sizeof(serv),
                             NI_NUMERICHOST | NI_NUMERICSERV);
-                    getnameinfo(&addr.a, addrlen, host2, sizeof(host2),
-                            serv2, sizeof(serv2),
+                    getnameinfo(&addr.a, addrlen, mhost, sizeof(mhost),
+                            mserv, sizeof(mserv),
                             NI_NUMERICHOST | NI_NUMERICSERV);
                     fprintf(stderr, "Addr mismatch: from(%s:%s) addr(%s:%s)\n",
-                            host, serv, host2, serv2);
+                            host, serv, mhost, mserv);
                 }
             }
             else {
