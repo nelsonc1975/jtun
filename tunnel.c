@@ -159,8 +159,8 @@ int main(int argc, char **argv)
             isbind = 1;
             break;
         }
-        else if (verbose > 2) {
-            perror("bind failed");
+        else if (verbose >= 2) {
+            perror("bind failed, try next");
         }
         result = result -> ai_next;
     }
@@ -234,6 +234,26 @@ int main(int argc, char **argv)
     AES_set_encrypt_key(key, sizeof(key) * 8, &enc_key);
     AES_set_decrypt_key(key, sizeof(key) * 8, &dec_key);
 
+    char logfname[IFNAMSIZ + 20];
+    snprintf(logfname, sizeof(logfname), "jtun.%s.log", ifr.ifr_name);
+    int logfd = open(logfname, O_WRONLY | O_CREAT | O_TRUNC,
+            S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    if (logfd == -1) {
+        perror("cannot create log file");
+        exit(16);
+    }
+    int nullfd = open("/dev/null", O_RDWR);
+    if (nullfd == -1) {
+        perror("cannot create null file");
+        exit(17);
+    }
+
+    struct passwd * jtun = getpwnam("jtun");
+    if (jtun == NULL) {
+        perror("getpwnam for jtun error");
+        exit(18);
+    }
+
     pid_t pid;
     if ((pid = fork()) != 0) {
         printf("TUN: %s\n", ifr.ifr_name);
@@ -253,26 +273,17 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    char logfname[IFNAMSIZ + 20];
-    snprintf(logfname, sizeof(logfname), "jtun.%s.log", ifr.ifr_name);
-    int logfd = open(logfname, O_WRONLY);
-    int nullfd = open("/dev/null", O_RDWR);
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
     dup2(nullfd, STDOUT_FILENO);
     dup2(logfd, STDOUT_FILENO);
-    dup2(nullfd, STDERR_FILENO);
+    dup2(logfd, STDERR_FILENO);
     close(logfd);
     close(nullfd);
 
     printf("JTun started.\n");
-
-    struct passwd * jtun = getpwnam("jtun");
-    if (jtun == NULL) {
-        perror("getpwnam for jtun error");
-        exit(16);
-    }
+    fflush(stdout);
 
     setgid(jtun -> pw_gid);
     setuid(jtun -> pw_uid);
@@ -293,12 +304,14 @@ int main(int argc, char **argv)
         }
 
         if (FD_ISSET(dev, &rfds)) {
-            ssize_t cnt = read(dev, (void *)&tbuf[HEADLEN], BUFLEN);
+            ssize_t cnt = read(dev, (void *)&tbuf[HEADLEN], PKGLEN);
             *((uint16_t *)tbuf) = htons((uint16_t)cnt);
             if (RAND_bytes(&tbuf[2], 4) != 1) {
                 *((uint32_t *)&tbuf[2]) = 0xAA5555AA;
             }
-            // fputs("t>", stdout); dumphex(tbuf, cnt + HEADLEN);
+            if (verbose >= 4) {
+                fputs("t>", stdout); dumphex(tbuf, cnt + HEADLEN);
+            }
             memcpy(ivc, iv, AES_BLOCK_SIZE);
             AES_cbc_encrypt(tbuf, sbuf, cnt + HEADLEN, &enc_key, ivc, AES_ENCRYPT);
             ssize_t slen = CBCLEN(cnt + HEADLEN);
@@ -309,12 +322,18 @@ int main(int argc, char **argv)
             sendto(sock, &sbuf, slen, 0, &addr.a, addrlen);
             res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
                     serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
-            // fputs("==", stdout); dumphex(sbuf, slen);
+            if (verbose >= 4) {
+                fputs("==", stdout); dumphex(sbuf, slen);
+            }
             if (res == 0) {
-                // printf("s<%s:%s\n", host, serv);
+                if (verbose >= 4) {
+                    printf("s<%s:%s\n", host, serv);
+                }
             }
             else {
-                // puts("s<...");
+                if (verbose >= 4) {
+                    puts("s<...");
+                }
             }
         }
 
@@ -327,12 +346,18 @@ int main(int argc, char **argv)
             res = getnameinfo(&from.a, fromlen, host, sizeof(host),
                     serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
             if (res == 0) {
-                // printf("s>%s:%s\n", host, serv);
+                if (verbose >= 4) {
+                    printf("s>%s:%s\n", host, serv);
+                }
             }
             else {
-                // puts("s>...");
+                if (verbose >= 4) {
+                    puts("s>...");
+                }
             }
-            // fputs("==", stdout); dumphex(sbuf, cnt);
+            if (verbose >= 4) {
+                fputs("==", stdout); dumphex(sbuf, cnt);
+            }
 
             int address_ok = 0;
             if (!isserv) {
@@ -364,7 +389,9 @@ int main(int argc, char **argv)
                 memcpy(ivc, iv, AES_BLOCK_SIZE);
                 AES_cbc_encrypt(sbuf, tbuf, cnt, &dec_key, ivc, AES_DECRYPT);
                 ssize_t msglen = ntohs(*(uint16_t *)tbuf);
-                // fputs("t<", stdout); dumphex(tbuf, msglen + HEADLEN);
+                if (verbose >= 4) {
+                    fputs("t<", stdout); dumphex(tbuf, msglen + HEADLEN);
+                }
                 write(dev, (void *)&tbuf[HEADLEN], msglen);
             }
         }
