@@ -15,9 +15,13 @@
 #include <openssl/aes.h>
 #include <openssl/err.h>
 
-#define PKGLEN 1500
-#define BUFLEN (AES_BLOCK_SIZE + CBCLEN(PKGLEN) + AES_BLOCK_SIZE)
 #define CBCLEN(l) (((l) + AES_BLOCK_SIZE) / AES_BLOCK_SIZE * AES_BLOCK_SIZE)
+
+#define PKGLEN 1500
+#define HEADLEN 1
+#define MSGLEN (PKGLEN + HEADLEN)
+#define BUFLEN (AES_BLOCK_SIZE + CBCLEN(MSGLEN) + AES_BLOCK_SIZE)
+
 #define MAXADDRLEN sizeof(struct sockaddr_in6)
 
 union sa_t {
@@ -280,7 +284,7 @@ int main(int argc, char **argv)
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     int maxfd = (sock > dev) ? sock : dev;
     while (1) {
-        uint8_t tbuf[PKGLEN];
+        uint8_t tbuf[MSGLEN];
         uint8_t sbuf[BUFLEN];
 
         fd_set rfds;
@@ -294,7 +298,9 @@ int main(int argc, char **argv)
         }
 
         if (FD_ISSET(dev, &rfds)) {
-            ssize_t cnt = read(dev, (void *)tbuf, PKGLEN);
+            tbuf[0] = 0xFF;
+            ssize_t cnt = read(dev, (void *)&tbuf[HEADLEN], PKGLEN);
+            cnt += HEADLEN;
             if (verbose >= 4) {
                 fputs("t>", stdout); dumphex(tbuf, cnt);
             }
@@ -385,7 +391,9 @@ int main(int argc, char **argv)
                 if (verbose >= 4) {
                     fputs("t<", stdout); dumphex(tbuf, ldec);
                 }
-                write(dev, (void *)tbuf, ldec);
+                if (tbuf[0] == 0xFF) {
+                    write(dev, (void *)&tbuf[HEADLEN], ldec - HEADLEN);
+                }
             }
         }
     }
