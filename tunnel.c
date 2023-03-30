@@ -10,14 +10,14 @@
 #include <linux/if_tun.h>
 #include <net/if.h>
 #include <pwd.h>
-#include <openssl/aes.h>
+#include <openssl/evp.h>
 #include <openssl/rand.h>
+#include <openssl/aes.h>
+#include <openssl/err.h>
 
 #define PKGLEN 1500
-#define HEADLEN 6
-#define MSGLEN (PKGLEN + HEADLEN)
-#define BUFLEN CBCLEN(MSGLEN)
-#define CBCLEN(l) (((l) + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE * AES_BLOCK_SIZE)
+#define BUFLEN (AES_BLOCK_SIZE + CBCLEN(PKGLEN) + AES_BLOCK_SIZE)
+#define CBCLEN(l) (((l) + AES_BLOCK_SIZE) / AES_BLOCK_SIZE * AES_BLOCK_SIZE)
 #define MAXADDRLEN sizeof(struct sockaddr_in6)
 
 union sa_t {
@@ -71,9 +71,10 @@ int main(int argc, char **argv)
     const char *rport = NULL;
     const char *devname = "jtun%d";
     int verbose = 0;
+    int fg = 0;
 
     int opt;
-    while ((opt = getopt(argc, argv, "v46scd:h:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "fv46scd:h:p:")) != -1) {
         switch (opt) {
             case '4':
                 ip_family = AF_INET;
@@ -97,6 +98,9 @@ int main(int argc, char **argv)
                 break;
             case 'v':
                 ++verbose;
+                break;
+            case 'f':
+                fg = 1;
                 break;
             default:
                 usage(argv[0]);
@@ -217,80 +221,66 @@ int main(int argc, char **argv)
     }
     fclose(keyfile);
 
-    uint8_t iv[AES_BLOCK_SIZE];
-    FILE *ivfile = fopen("iv", "rb");
-    if (keyfile == NULL) {
-        perror("cannot open iv file");
-        exit(13);
-    }
-    if (fread(iv, sizeof(iv), 1, ivfile) != 1) {
-        fprintf(stderr, "error read iv\n");
-        exit(14);
-    }
-    fclose(ivfile);
-    uint8_t ivc[AES_BLOCK_SIZE];  /* copy of iv */
-
-    AES_KEY enc_key, dec_key;
-    AES_set_encrypt_key(key, sizeof(key) * 8, &enc_key);
-    AES_set_decrypt_key(key, sizeof(key) * 8, &dec_key);
-
-    char logfname[IFNAMSIZ + 20];
-    snprintf(logfname, sizeof(logfname), "jtun.%s.log", ifr.ifr_name);
-    int logfd = open(logfname, O_WRONLY | O_CREAT | O_TRUNC,
-            S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    if (logfd == -1) {
-        perror("cannot create log file");
-        exit(16);
-    }
-    int nullfd = open("/dev/null", O_RDWR);
-    if (nullfd == -1) {
-        perror("cannot create null file");
-        exit(17);
-    }
-
-    struct passwd * jtun = getpwnam("jtun");
-    if (jtun == NULL) {
-        perror("getpwnam for jtun error");
-        exit(18);
-    }
-
-    pid_t pid;
-    if ((pid = fork()) != 0) {
-        printf("TUN: %s\n", ifr.ifr_name);
-        if (isserv) {
-            printf("Bind: %s:%s\n", host, serv);
+    if (!fg) {
+        char logfname[IFNAMSIZ + 20];
+        snprintf(logfname, sizeof(logfname), "jtun.%s.log", ifr.ifr_name);
+        int logfd = open(logfname, O_WRONLY | O_CREAT | O_TRUNC,
+                S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        if (logfd == -1) {
+            perror("cannot create log file");
+            exit(16);
+        }
+        int nullfd = open("/dev/null", O_RDWR);
+        if (nullfd == -1) {
+            perror("cannot create null file");
+            exit(17);
         }
 
-        char pidfname[IFNAMSIZ + 20];
-        snprintf(pidfname, sizeof(pidfname), "jtun.%s.pid", ifr.ifr_name);
-        FILE *pidfile = fopen(pidfname, "w");
-        if (keyfile == NULL) {
-            perror("cannot create pid file");
-            exit(15);
+        struct passwd * jtun = getpwnam("jtun");
+        if (jtun == NULL) {
+            perror("getpwnam for jtun error");
+            exit(18);
         }
-        fprintf(pidfile, "%d", pid);
-        fclose(pidfile);
-        return 0;
-    }
 
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
-    dup2(nullfd, STDOUT_FILENO);
-    dup2(logfd, STDOUT_FILENO);
-    dup2(logfd, STDERR_FILENO);
-    close(logfd);
-    close(nullfd);
+        pid_t pid;
+        if ((pid = fork()) != 0) {
+            printf("TUN: %s\n", ifr.ifr_name);
+            if (isserv) {
+                printf("Bind: %s:%s\n", host, serv);
+            }
+
+            char pidfname[IFNAMSIZ + 20];
+            snprintf(pidfname, sizeof(pidfname), "jtun.%s.pid", ifr.ifr_name);
+            FILE *pidfile = fopen(pidfname, "w");
+            if (keyfile == NULL) {
+                perror("cannot create pid file");
+                exit(15);
+            }
+            fprintf(pidfile, "%d", pid);
+            fclose(pidfile);
+            return 0;
+        }
+
+        close(STDIN_FILENO);
+        close(STDOUT_FILENO);
+        close(STDERR_FILENO);
+        dup2(nullfd, STDOUT_FILENO);
+        dup2(logfd, STDOUT_FILENO);
+        dup2(logfd, STDERR_FILENO);
+        close(logfd);
+        close(nullfd);
+
+        setgid(jtun -> pw_gid);
+        setuid(jtun -> pw_uid);
+    }
 
     printf("JTun started.\n");
     fflush(stdout);
 
-    setgid(jtun -> pw_gid);
-    setuid(jtun -> pw_uid);
-
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     int maxfd = (sock > dev) ? sock : dev;
     while (1) {
-        uint8_t tbuf[BUFLEN];
+        uint8_t tbuf[PKGLEN];
         uint8_t sbuf[BUFLEN];
 
         fd_set rfds;
@@ -304,26 +294,26 @@ int main(int argc, char **argv)
         }
 
         if (FD_ISSET(dev, &rfds)) {
-            ssize_t cnt = read(dev, (void *)&tbuf[HEADLEN], PKGLEN);
-            *((uint16_t *)tbuf) = htons((uint16_t)cnt);
-            if (RAND_bytes(&tbuf[2], 4) != 1) {
-                *((uint32_t *)&tbuf[2]) = 0xAA5555AA;
-            }
+            ssize_t cnt = read(dev, (void *)tbuf, PKGLEN);
             if (verbose >= 4) {
-                fputs("t>", stdout); dumphex(tbuf, cnt + HEADLEN);
+                fputs("t>", stdout); dumphex(tbuf, cnt);
             }
-            memcpy(ivc, iv, AES_BLOCK_SIZE);
-            AES_cbc_encrypt(tbuf, sbuf, cnt + HEADLEN, &enc_key, ivc, AES_ENCRYPT);
-            ssize_t slen = CBCLEN(cnt + HEADLEN);
-            if (RAND_bytes(&sbuf[slen], AES_BLOCK_SIZE) == 1) {
-                ssize_t padlen = sbuf[slen + AES_BLOCK_SIZE - 1] % AES_BLOCK_SIZE;
-                slen += padlen;
+            RAND_bytes(sbuf, AES_BLOCK_SIZE);
+            EVP_CIPHER_CTX_reset(ctx);
+            EVP_EncryptInit(ctx, EVP_aes_128_cbc(), key, sbuf);
+            int lenc, lenc2;
+            EVP_EncryptUpdate(ctx, &sbuf[AES_BLOCK_SIZE], &lenc, tbuf, cnt);
+            EVP_EncryptFinal(ctx, &sbuf[AES_BLOCK_SIZE + lenc], &lenc2);
+            lenc += (lenc2 + AES_BLOCK_SIZE);
+            if (RAND_bytes(&sbuf[lenc], AES_BLOCK_SIZE) == 1) {
+                ssize_t padlen = sbuf[lenc + AES_BLOCK_SIZE - 1] % AES_BLOCK_SIZE;
+                lenc += padlen;
             }
-            sendto(sock, &sbuf, slen, 0, &addr.a, addrlen);
+            sendto(sock, &sbuf, lenc, 0, &addr.a, addrlen);
             res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
                     serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
             if (verbose >= 4) {
-                fputs("==", stdout); dumphex(sbuf, slen);
+                fputs("==", stdout); dumphex(sbuf, lenc);
             }
             if (res == 0) {
                 if (verbose >= 4) {
@@ -359,13 +349,13 @@ int main(int argc, char **argv)
                 fputs("==", stdout); dumphex(sbuf, cnt);
             }
 
-            int address_ok = 0;
+            int frompeer = 0;
             if (!isserv) {
                 if (addrlen == fromlen &&
                         memcmp(&from.a, &addr.a, fromlen) == 0) {
-                    address_ok = 1;
+                    frompeer = 1;
                 }
-                else {
+                else if (verbose >= 2) {
                     char mhost[100];
                     char mserv[20];
                     getnameinfo(&from.a, fromlen, host, sizeof(host),
@@ -381,21 +371,25 @@ int main(int argc, char **argv)
             else {
                 memcpy(&addr.a, &from.a, fromlen);
                 addrlen = fromlen;
-                address_ok = 1;
+                frompeer = 1;
             }
 
-            if (address_ok) {
+            if (frompeer) {
                 cnt = (cnt / AES_BLOCK_SIZE) * AES_BLOCK_SIZE;
-                memcpy(ivc, iv, AES_BLOCK_SIZE);
-                AES_cbc_encrypt(sbuf, tbuf, cnt, &dec_key, ivc, AES_DECRYPT);
-                ssize_t msglen = ntohs(*(uint16_t *)tbuf);
+                int ldec, ldec2;
+                EVP_CIPHER_CTX_reset(ctx);
+                EVP_DecryptInit(ctx, EVP_aes_128_cbc(), key, sbuf);
+                EVP_DecryptUpdate(ctx, tbuf, &ldec, &sbuf[AES_BLOCK_SIZE], cnt);
+                EVP_DecryptFinal(ctx, &tbuf[ldec], &ldec2);
+                ldec += ldec2;
                 if (verbose >= 4) {
-                    fputs("t<", stdout); dumphex(tbuf, msglen + HEADLEN);
+                    fputs("t<", stdout); dumphex(tbuf, ldec);
                 }
-                write(dev, (void *)&tbuf[HEADLEN], msglen);
+                write(dev, (void *)tbuf, ldec);
             }
         }
     }
+    EVP_CIPHER_CTX_free(ctx);
 
     return 0;
 }
