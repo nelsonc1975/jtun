@@ -14,6 +14,8 @@
 #include <openssl/rand.h>
 #include <openssl/aes.h>
 #include <openssl/err.h>
+#include <signal.h>
+
 
 #define CBCLEN(l) (((l) + AES_BLOCK_SIZE) / AES_BLOCK_SIZE * AES_BLOCK_SIZE)
 
@@ -24,17 +26,38 @@
 
 #define MAXADDRLEN sizeof(struct sockaddr_in6)
 
+
 union sa_t {
     struct sockaddr a;
     uint8_t _buf[MAXADDRLEN];
 };
 
-const char HEX[] = {
+static const char HEX[] = {
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
     'A', 'B', 'C', 'D', 'E', 'F'
 };
 
-void dumphex(const uint8_t *data, ssize_t count)
+static int term = 0;
+
+static const char *keyfname = "key";
+static uint8_t key[16];  /* 128 bits key */
+
+
+static void sigterm(int sno)
+{
+    term = 1;
+}
+
+
+static int readkey(uint8_t *key, int keylen, const char *keyfname);
+static void sigcfg(int sno)
+{
+    printf("read key file\n");
+    readkey(key, sizeof(key), keyfname);
+}
+
+
+static void dumphex(const uint8_t *data, ssize_t count)
 {
     char * text = malloc(count * 2 + 1);
     for (ssize_t i = 0; i < count; ++ i) {
@@ -46,14 +69,31 @@ void dumphex(const uint8_t *data, ssize_t count)
     puts(text);
 }
 
-void usage(const char *name)
+
+static void usage(const char *name)
 {
     fprintf(stderr,
             "Usage: %s [-46scfv] [-d dev] [-h host] [-p port] "
             "[-k keyfile] [<host> <port>]\n",
             name);
-    exit(1);
 }
+
+
+static int readkey(uint8_t *key, int keylen, const char *keyfname)
+{
+    FILE *keyfile = fopen(keyfname, "rb");
+    if (keyfile == NULL) {
+        perror("cannot open key file");
+        return -1;
+    }
+    if (fread(key, keylen, 1, keyfile) != 1) {
+        fprintf(stderr, "error read key\n");
+        return -1;
+    }
+    fclose(keyfile);
+    return 0;
+}
+
 
 int main(int argc, char **argv)
 {
@@ -74,7 +114,6 @@ int main(int argc, char **argv)
     const char *rhost = NULL;
     const char *rport = NULL;
     const char *devname = "jtun%d";
-    const char *keyfname = "key";
     int verbose = 0;
     int fg = 0;
 
@@ -112,6 +151,7 @@ int main(int argc, char **argv)
                 break;
             default:
                 usage(argv[0]);
+                exit(1);
                 break;
         }
     }
@@ -119,6 +159,7 @@ int main(int argc, char **argv)
     if (!isserv) {
         if (optind + 2 != argc) {
             usage(argv[0]);
+            exit(1);
         }
 
         rhost = argv[optind];
@@ -127,6 +168,7 @@ int main(int argc, char **argv)
     else {
         if (optind != argc) {
             usage(argv[0]);
+            exit(1);
         }
     }
 
@@ -217,17 +259,12 @@ int main(int argc, char **argv)
     fcntl(sock, F_SETFL, O_NONBLOCK);
     fcntl(dev, F_SETFL, O_NONBLOCK);
 
-    uint8_t key[16];  /* 128 bits key */
-    FILE *keyfile = fopen(keyfname, "rb");
-    if (keyfile == NULL) {
-        perror("cannot open key file");
+    if (readkey(key, sizeof(key), keyfname) != 0) {
         exit(11);
     }
-    if (fread(key, sizeof(key), 1, keyfile) != 1) {
-        fprintf(stderr, "error read key\n");
-        exit(12);
-    }
-    fclose(keyfile);
+
+    printf("TUN: %s\n", ifr.ifr_name);
+    printf("Bind: %s:%s\n", host, serv);
 
     if (!fg) {
         char logfname[IFNAMSIZ + 20];
@@ -236,31 +273,26 @@ int main(int argc, char **argv)
                 S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
         if (logfd == -1) {
             perror("cannot create log file");
-            exit(16);
+            exit(12);
         }
         int nullfd = open("/dev/null", O_RDWR);
         if (nullfd == -1) {
             perror("cannot create null file");
-            exit(17);
+            exit(13);
         }
 
         struct passwd * jtun = getpwnam("jtun");
         if (jtun == NULL) {
             perror("getpwnam for jtun error");
-            exit(18);
+            exit(14);
         }
 
         pid_t pid;
         if ((pid = fork()) != 0) {
-            printf("TUN: %s\n", ifr.ifr_name);
-            if (isserv) {
-                printf("Bind: %s:%s\n", host, serv);
-            }
-
             char pidfname[IFNAMSIZ + 20];
             snprintf(pidfname, sizeof(pidfname), "jtun.%s.pid", ifr.ifr_name);
             FILE *pidfile = fopen(pidfname, "w");
-            if (keyfile == NULL) {
+            if (pidfile == NULL) {
                 perror("cannot create pid file");
                 exit(15);
             }
@@ -269,6 +301,8 @@ int main(int argc, char **argv)
             return 0;
         }
 
+        fflush(stdout);
+        fflush(stderr);
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
@@ -282,12 +316,25 @@ int main(int argc, char **argv)
         setuid(jtun -> pw_uid);
     }
 
+    if (signal(SIGTERM, sigterm) == SIG_ERR) {
+        perror("set signal TERM error");
+    }
+    if (signal(SIGINT, sigterm) == SIG_ERR) {
+        perror("set signal INT error");
+    }
+    if (signal(SIGHUP, sigterm) == SIG_ERR) {
+        perror("set signal HUP error");
+    }
+    if (signal(SIGUSR1, sigcfg) == SIG_ERR) {
+        perror("set signal USR1 error");
+    }
+
     printf("JTun started.\n");
     fflush(stdout);
 
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     int maxfd = (sock > dev) ? sock : dev;
-    while (1) {
+    while (!term) {
         uint8_t tbuf[MSGLEN];
         uint8_t sbuf[BUFLEN];
 
@@ -298,12 +345,23 @@ int main(int argc, char **argv)
 
         int ret = select(maxfd + 1, &rfds, NULL, NULL, NULL);
         if (ret < 0) {
+            if (errno != EINTR) {
+                perror("select error");
+                exit(-1);
+            }
             continue;
         }
 
         if (FD_ISSET(dev, &rfds)) {
             tbuf[0] = 0xFF;
-            ssize_t cnt = read(dev, (void *)&tbuf[HEADLEN], PKGLEN);
+            ssize_t cnt;
+            while ((cnt = read(dev,
+                            (void *)&tbuf[HEADLEN], PKGLEN)) < 0) {
+                if (errno != EINTR) {
+                    perror("read tun error");
+                    exit(-1);
+                }
+            }
             cnt += HEADLEN;
             if (verbose >= 4) {
                 fputs("t>", stdout); dumphex(tbuf, cnt);
@@ -319,19 +377,20 @@ int main(int argc, char **argv)
                 ssize_t padlen = sbuf[lenc + AES_BLOCK_SIZE - 1] % AES_BLOCK_SIZE;
                 lenc += padlen;
             }
-            sendto(sock, &sbuf, lenc, 0, &addr.a, addrlen);
-            res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
-                    serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
-            if (verbose >= 4) {
-                fputs("==", stdout); dumphex(sbuf, lenc);
-            }
-            if (res == 0) {
-                if (verbose >= 4) {
-                    printf("s<%s:%s\n", host, serv);
+            while (sendto(sock, &sbuf, lenc, 0, &addr.a, addrlen) < 0) {
+                if (errno != EINTR) {
+                    perror("sendto socket error");
+                    exit(-1);
                 }
             }
-            else {
-                if (verbose >= 4) {
+            if (verbose >= 4) {
+                res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
+                        serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
+                fputs("==", stdout); dumphex(sbuf, lenc);
+                if (res == 0) {
+                    printf("s<%s:%s\n", host, serv);
+                }
+                else {
                     puts("s<...");
                 }
             }
@@ -341,21 +400,23 @@ int main(int argc, char **argv)
             union sa_t from;
             socklen_t fromlen = MAXADDRLEN;
 
-            ssize_t cnt = recvfrom(sock, &sbuf, sizeof(sbuf), 0,
-                    &from.a, &fromlen);
-            res = getnameinfo(&from.a, fromlen, host, sizeof(host),
-                    serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
-            if (res == 0) {
-                if (verbose >= 4) {
-                    printf("s>%s:%s\n", host, serv);
-                }
-            }
-            else {
-                if (verbose >= 4) {
-                    puts("s>...");
+            ssize_t cnt;
+            while ((cnt = recvfrom(sock, &sbuf, sizeof(sbuf), 0,
+                    &from.a, &fromlen)) < 0) {
+                if (errno != EINTR) {
+                    perror("recvfrom socket error");
+                    exit(-1);
                 }
             }
             if (verbose >= 4) {
+                res = getnameinfo(&from.a, fromlen, host, sizeof(host),
+                        serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
+                if (res == 0) {
+                    printf("s>%s:%s\n", host, serv);
+                }
+                else {
+                    puts("s>...");
+                }
                 fputs("==", stdout); dumphex(sbuf, cnt);
             }
 
@@ -396,12 +457,20 @@ int main(int argc, char **argv)
                     fputs("t<", stdout); dumphex(tbuf, ldec);
                 }
                 if (tbuf[0] == 0xFF) {
-                    write(dev, (void *)&tbuf[HEADLEN], ldec - HEADLEN);
+                    while (write(dev, (void *)&tbuf[HEADLEN], ldec - HEADLEN) < 0) {
+                        if (errno != EINTR) {
+                            perror("write tun error");
+                            exit(-1);
+                        }
+                    }
                 }
             }
         }
     }
     EVP_CIPHER_CTX_free(ctx);
+
+    printf("JTun stopped.\n");
+    fflush(stdout);
 
     return 0;
 }
