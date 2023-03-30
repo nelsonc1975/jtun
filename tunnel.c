@@ -49,8 +49,8 @@ void dumphex(const uint8_t *data, ssize_t count)
 void usage(const char *name)
 {
     fprintf(stderr,
-            "Usage: %s [-46scv] [-d dev] [-h host] [-p port] "
-            "[<host> <port>]\n",
+            "Usage: %s [-46scfv] [-d dev] [-h host] [-p port] "
+            "[-k keyfile] [<host> <port>]\n",
             name);
     exit(1);
 }
@@ -74,11 +74,12 @@ int main(int argc, char **argv)
     const char *rhost = NULL;
     const char *rport = NULL;
     const char *devname = "jtun%d";
+    const char *keyfname = "key";
     int verbose = 0;
     int fg = 0;
 
     int opt;
-    while ((opt = getopt(argc, argv, "fv46scd:h:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "fv46sck:d:h:p:")) != -1) {
         switch (opt) {
             case '4':
                 ip_family = AF_INET;
@@ -99,6 +100,9 @@ int main(int argc, char **argv)
                 break;
             case 'd':
                 devname = strdup(optarg);
+                break;
+            case 'k':
+                keyfname = strdup(optarg);
                 break;
             case 'v':
                 ++verbose;
@@ -214,7 +218,7 @@ int main(int argc, char **argv)
     fcntl(dev, F_SETFL, O_NONBLOCK);
 
     uint8_t key[16];  /* 128 bits key */
-    FILE *keyfile = fopen("key", "rb");
+    FILE *keyfile = fopen(keyfname, "rb");
     if (keyfile == NULL) {
         perror("cannot open key file");
         exit(11);
