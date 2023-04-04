@@ -75,7 +75,7 @@ static void usage(const char *name)
 {
     fprintf(stderr,
             "Usage: %s [-46scfv] [-d dev] [-h host] [-p port] "
-            "[-k keyfile] [<host> <port>]\n",
+            "[-r rundir] [-k keyfile] [<host> <port>]\n",
             name);
 }
 
@@ -119,7 +119,7 @@ int main(int argc, char **argv)
     int fg = 0;
 
     int opt;
-    while ((opt = getopt(argc, argv, "fv46sck:d:h:p:")) != -1) {
+    while ((opt = getopt(argc, argv, "fv46scr:k:d:h:p:")) != -1) {
         switch (opt) {
             case '4':
                 ip_family = AF_INET;
@@ -140,6 +140,9 @@ int main(int argc, char **argv)
                 break;
             case 'd':
                 devname = strdup(optarg);
+                break;
+            case 'r':
+                rundir = strdup(optarg);
                 break;
             case 'k':
                 keyfname = strdup(optarg);
@@ -268,6 +271,11 @@ int main(int argc, char **argv)
     printf("Bind: %s:%s\n", host, serv);
 
     if (!fg) {
+        if (chdir(rundir) != 0) {
+            perror("cannot change dir");
+            exit(12);
+        }
+
         pid_t pid;
         if ((pid = fork()) != 0) {
             char pidfname[IFNAMSIZ + 20];
@@ -275,16 +283,11 @@ int main(int argc, char **argv)
             FILE *pidfile = fopen(pidfname, "w");
             if (pidfile == NULL) {
                 perror("cannot create pid file");
-                exit(12);
+                exit(13);
             }
             fprintf(pidfile, "%d", pid);
             fclose(pidfile);
             return 0;
-        }
-
-        if (chdir(rundir) != 0) {
-            perror("cannot change dir");
-            exit(13);
         }
 
         char logfname[IFNAMSIZ + 20];
