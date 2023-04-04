@@ -39,7 +39,8 @@ static const char HEX[] = {
 
 static int term = 0;
 
-static const char *keyfname = "key";
+static const char *keyfname = "/etc/jtun/key";
+static const char *rundir = "/var/run/jtun";
 static uint8_t key[16];  /* 128 bits key */
 
 
@@ -267,26 +268,6 @@ int main(int argc, char **argv)
     printf("Bind: %s:%s\n", host, serv);
 
     if (!fg) {
-        char logfname[IFNAMSIZ + 20];
-        snprintf(logfname, sizeof(logfname), "jtun.%s.log", ifr.ifr_name);
-        int logfd = open(logfname, O_WRONLY | O_CREAT | O_TRUNC,
-                S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-        if (logfd == -1) {
-            perror("cannot create log file");
-            exit(12);
-        }
-        int nullfd = open("/dev/null", O_RDWR);
-        if (nullfd == -1) {
-            perror("cannot create null file");
-            exit(13);
-        }
-
-        struct passwd * jtun = getpwnam("jtun");
-        if (jtun == NULL) {
-            perror("getpwnam for jtun error");
-            exit(14);
-        }
-
         pid_t pid;
         if ((pid = fork()) != 0) {
             char pidfname[IFNAMSIZ + 20];
@@ -294,27 +275,41 @@ int main(int argc, char **argv)
             FILE *pidfile = fopen(pidfname, "w");
             if (pidfile == NULL) {
                 perror("cannot create pid file");
-                exit(15);
+                exit(12);
             }
             fprintf(pidfile, "%d", pid);
             fclose(pidfile);
             return 0;
         }
 
-        fflush(stdout);
-        fflush(stderr);
+        if (chdir(rundir) != 0) {
+            perror("cannot change dir");
+            exit(13);
+        }
+
+        char logfname[IFNAMSIZ + 20];
+        snprintf(logfname, sizeof(logfname), "jtun.%s.log", ifr.ifr_name);
+        int logfd = open(logfname, O_WRONLY | O_CREAT | O_TRUNC,
+                S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        if (logfd == -1) {
+            perror("cannot create log file");
+            exit(14);
+        }
+
         close(STDIN_FILENO);
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
-        dup2(nullfd, STDOUT_FILENO);
         dup2(logfd, STDOUT_FILENO);
         dup2(logfd, STDERR_FILENO);
         close(logfd);
-        close(nullfd);
-
-        setgid(jtun -> pw_gid);
-        setuid(jtun -> pw_uid);
     }
+
+    struct passwd * jtun = getpwnam("jtun");
+    if (jtun == NULL) {
+        perror("getpwnam for jtun error");
+        exit(15);
+    }
+
+    setgid(jtun -> pw_gid);
+    setuid(jtun -> pw_uid);
 
     if (signal(SIGTERM, sigterm) == SIG_ERR) {
         perror("set signal TERM error");
