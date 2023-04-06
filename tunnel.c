@@ -246,9 +246,17 @@ int main(int argc, char **argv)
     }
 
     if (!isserv) {
-        if (getaddrinfo(rhost, rport, &hints, &result)) {
+        int retry = 0;
+        while (1) {
+            if (getaddrinfo(rhost, rport, &hints, &result) == 0) {
+                break;
+            }
             perror("getaddrinfo for remote address failed");
-            exit(9);
+            if (++retry > 60) {
+                fprintf(stderr, "enough retry, quit\n");
+                exit(9);
+            }
+            sleep(1);
         }
         if (!result) {
             fprintf(stderr, "getaddrinfo for remote returned nothing\n");
@@ -378,7 +386,7 @@ int main(int argc, char **argv)
             while (sendto(sock, &sbuf, lenc, 0, &addr.a, addrlen) < 0) {
                 if (errno != EINTR) {
                     perror("sendto socket error");
-                    exit(-1);
+                    // exit(-1);
                 }
             }
             if (verbose >= 4) {
