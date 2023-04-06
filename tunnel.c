@@ -383,13 +383,24 @@ int main(int argc, char **argv)
                 ssize_t padlen = sbuf[lenc + AES_BLOCK_SIZE - 1] % AES_BLOCK_SIZE;
                 lenc += padlen;
             }
-            while (sendto(sock, &sbuf, lenc, 0, &addr.a, addrlen) < 0) {
-                if (errno != EINTR) {
+            int sent = 0;
+            do {
+                if (sendto(sock, &sbuf, lenc, 0, &addr.a, addrlen) >= 0) {
+                    sent = 1;
+                }
+            } while (!sent && errno == EINTR);
+            if (!sent) {
+                if (errno == ENETUNREACH) {
+                    if (verbose >= 4) {
+                        perror("sendto socket error");
+                    }
+                }
+                else {
                     perror("sendto socket error");
-                    // exit(-1);
+                    exit(-1);
                 }
             }
-            if (verbose >= 4) {
+            else if (verbose >= 4) {
                 res = getnameinfo(&addr.a, addrlen, host, sizeof(host),
                         serv, sizeof(serv), NI_NUMERICHOST | NI_NUMERICSERV);
                 fputs("==", stdout); dumphex(sbuf, lenc);
