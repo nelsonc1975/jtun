@@ -390,7 +390,7 @@ int main(int argc, char **argv)
                 }
             } while (!sent && errno == EINTR);
             if (!sent) {
-                if (errno == ENETUNREACH) {
+                if (errno == ENETUNREACH || errno == EAGAIN) {
                     if (verbose >= 4) {
                         perror("sendto socket error");
                     }
